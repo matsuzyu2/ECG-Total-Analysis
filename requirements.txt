@@ -1,0 +1,7 @@
+pandas
+plotly
+neurokit2
+scipy
+mne
+seaborn
+matplotlib
