@@ -27,11 +27,19 @@ from typing import Dict, List, Tuple
 
 import pandas as pd
 import plotly.graph_objects as go
+import numpy as np
 
 # Ensure this script works when executed from any CWD.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from analysis_pipeline.config import Config
+from analysis_pipeline.hrv import clean_rr_intervals
+from analysis_pipeline.io_utils import load_peaks_json
+from analysis_pipeline.hrv_frequency_ar import (
+    compute_hrv_psd_ar,
+    hrv_psd_html_fragment,
+    write_hrv_psd_summary_html,
+)
 from extract_ecg_columns import extract_columns
 from run_signal_diagnosis import process_segment
 from run_hrv_metrics import process_peaks_file
@@ -264,6 +272,9 @@ def run_session(*, session_id: str, rebuild_extracted: bool, quiet: bool, allow_
 
     # Step 2: HRV metrics
     metrics_rows: List[dict] = []
+    psd_fragments: List[tuple[str, str]] = []  # (segment_name, html_fragment)
+    summary_psd_html_name = "hrv_psd_summary.html"
+    _plotlyjs_mode = "cdn"  # include plotly.js only once
     for seg_key in FEEDBACK_COLUMNS_ORDER:
         if seg_key not in segment_paths:
             continue
@@ -273,6 +284,54 @@ def run_session(*, session_id: str, rebuild_extracted: bool, quiet: bool, allow_
 
         metrics = process_peaks_file(peaks_path, config=config, verbose=not quiet)
         row = metrics.to_flat_dict()
+
+        # -----------------------------------------------------------------
+        # Extra: AR(Burg) HRV frequency analysis + PSD plot (LF/HF annotated)
+        # Rationale: Welch/FFT can be unstable for ~60s windows; AR is smoother.
+        # We use full segment RR (not the center-30s HR window).
+        # -----------------------------------------------------------------
+        try:
+            peak_info = load_peaks_json(peaks_path)
+            peak_times = np.asarray(peak_info.peak_times, dtype=float)
+            rr_ms = np.diff(peak_times) * 1000.0
+            rr_cleaned = clean_rr_intervals(rr_ms, config).rr_cleaned
+
+            psd_result = compute_hrv_psd_ar(
+                rr_cleaned,
+                config=config,
+                fs_resample_hz=4.0,
+                ar_order=16,
+                nfft=1024,
+            )
+
+            # Collect HTML fragments and later write a single combined page.
+            fragment = hrv_psd_html_fragment(
+                psd_result,
+                title=f"HRV PSD (AR/Burg) - {session_id} / {segment_name}",
+                config=config,
+                include_plotlyjs=_plotlyjs_mode,
+            )
+            psd_fragments.append((segment_name, fragment))
+            _plotlyjs_mode = False
+
+            row.update(
+                {
+                    "ar_freq_vlf_power": psd_result.vlf_power,
+                    "ar_freq_lf_power": psd_result.lf_power,
+                    "ar_freq_hf_power": psd_result.hf_power,
+                    "ar_freq_total_power": psd_result.total_power,
+                    "ar_freq_lf_norm": psd_result.lf_norm,
+                    "ar_freq_hf_norm": psd_result.hf_norm,
+                    "ar_freq_lf_hf_ratio": psd_result.lf_hf_ratio,
+                    "ar_freq_psd_plot": summary_psd_html_name,
+                }
+            )
+
+            if psd_result.notes:
+                row["ar_freq_notes"] = "; ".join(psd_result.notes)
+        except Exception as e:
+            # Keep the main pipeline robust even if AR analysis fails.
+            row["ar_freq_error"] = str(e)
 
         condition, phase = _segment_key_to_condition_phase(seg_key)
         row.update(
@@ -291,6 +350,15 @@ def run_session(*, session_id: str, rebuild_extracted: bool, quiet: bool, allow_
 
     # Save session-local summary
     results_dir = config.get_session_results_dir(session_id)
+
+    # Write a single combined PSD page (if we have any fragments)
+    if psd_fragments:
+        write_hrv_psd_summary_html(
+            session_id=session_id,
+            items=psd_fragments,
+            output_html=results_dir / summary_psd_html_name,
+        )
+
     metrics_csv = results_dir / "resting_hr_feedback_metrics.csv"
     metrics_df.to_csv(metrics_csv, index=False)
 

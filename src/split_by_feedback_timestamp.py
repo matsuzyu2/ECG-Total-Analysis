@@ -65,10 +65,8 @@ def _detect_csv_header_skiprows(csv_path: Path) -> int:
 
 
 def _find_timestamp_csv(data_dir: Path) -> Path:
-    # The user spec says Data/Timestamp/Timestamp.csv, but the repo currently has Data/Condition/Timestamp.csv.
     candidates = [
-        data_dir / "Timestamp" / "Timestamp.csv",
-        data_dir / "Condition" / "Timestamp.csv",
+        data_dir / "Timestamp" / "Timestamp_2.csv",
     ]
     for p in candidates:
         if p.exists():

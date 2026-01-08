@@ -5,3 +5,4 @@ scipy
 mne
 seaborn
 matplotlib
+spectrum
