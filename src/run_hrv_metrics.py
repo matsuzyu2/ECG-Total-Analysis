@@ -79,12 +79,17 @@ def process_peaks_file(
     peak_times = np.array(peak_info.peak_times)
     
     # Compute HRV metrics
+    # NOTE: Mean HR is computed on the central 30 seconds (when timestamps exist),
+    # while diagnosis/peak detection stays unchanged.
     hrv_metrics = compute_hrv_metrics(
         peak_times=peak_times,
         segment_name=peak_info.segment_name,
         session_id=peak_info.session_id,
         duration_sec=duration_sec,
         config=config,
+        peak_timestamps=peak_info.peak_timestamps,
+        segment_start_timestamp=peak_info.segment_start_timestamp,
+        segment_end_timestamp=peak_info.segment_end_timestamp,
     )
     
     if verbose:
@@ -93,7 +98,8 @@ def process_peaks_file(
         
         td = hrv_metrics.time_domain
         if not np.isnan(td.mean_hr):
-            print(f"    Mean HR: {td.mean_hr:.1f} bpm")
+            hr_label = "center 30s" if any("Mean HR (center 30s)" in n for n in hrv_metrics.quality_notes) else "full 60s"
+            print(f"    Mean HR ({hr_label}): {td.mean_hr:.1f} bpm")
             print(f"    SDNN: {td.sdnn:.1f} ms")
             print(f"    RMSSD: {td.rmssd:.1f} ms")
             print(f"    pNN50: {td.pnn50:.1f}%")

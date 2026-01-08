@@ -7,9 +7,10 @@ Provides:
 - Frequency-domain HRV metrics (LF, HF, LF/HF ratio)
 """
 
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass, asdict
 import warnings
+from datetime import datetime, timedelta
 
 import numpy as np
 from scipy import signal
@@ -323,6 +324,9 @@ def compute_hrv_metrics(
     session_id: str,
     duration_sec: float,
     config: Config = default_config,
+    peak_timestamps: Optional[List[Optional[str]]] = None,
+    segment_start_timestamp: Optional[str] = None,
+    segment_end_timestamp: Optional[str] = None,
 ) -> HRVMetrics:
     """
     Compute complete HRV metrics from R-peak times.
@@ -402,16 +406,98 @@ def compute_hrv_metrics(
             f"⚠ Insufficient valid intervals ({len(rr_cleaned)} < {min_required})"
         )
     
-    # Compute time-domain metrics
+    # Compute time-domain metrics (HRV-related metrics use full window)
     time_domain = compute_time_domain(rr_cleaned)
+
+    # Override HR-related fields (mean/std/min/max) using central 30 seconds.
+    # Rationale: the outer parts of a 60s segment can contain more noise.
+    def _parse_optional_dt(text: Optional[str]) -> Optional[datetime]:
+        if text is None:
+            return None
+        raw = str(text).strip()
+        if not raw or raw.lower() in {"<na>", "nan", "nat", "none"}:
+            return None
+        # Try a few common formats.
+        try:
+            return datetime.fromisoformat(raw)
+        except Exception:
+            pass
+        for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+            try:
+                return datetime.strptime(raw, fmt)
+            except Exception:
+                continue
+        return None
+
+    def _compute_hr_stats_from_rr(rr_ms: np.ndarray) -> Tuple[float, float, float, float]:
+        if rr_ms is None or len(rr_ms) < 2:
+            return (np.nan, np.nan, np.nan, np.nan)
+        hr = 60000.0 / rr_ms
+        mean_hr = float(np.mean(hr))
+        std_hr = float(np.std(hr, ddof=1)) if len(hr) >= 2 else np.nan
+        return (mean_hr, std_hr, float(np.min(hr)), float(np.max(hr)))
+
+    start_dt = _parse_optional_dt(segment_start_timestamp)
+    end_dt = _parse_optional_dt(segment_end_timestamp)
+
+    hr_window_applied = False
+    hr_rr_cleaned: Optional[np.ndarray] = None
+
+    if start_dt is not None and peak_timestamps is not None and len(peak_timestamps) == len(peak_times):
+        # Determine the segment duration from timestamps if possible.
+        if end_dt is not None and end_dt > start_dt:
+            segment_dur = float((end_dt - start_dt).total_seconds())
+        else:
+            segment_dur = float(duration_sec)
+
+        # Central 30 seconds of the segment (i.e., exclude 15s at each edge for a 60s segment).
+        half = segment_dur / 2.0
+        half_window = min(15.0, half)  # If segment is shorter than 30s, clamp.
+        window_start = start_dt + timedelta(seconds=max(0.0, half - half_window))
+        window_end = start_dt + timedelta(seconds=min(segment_dur, half + half_window))
+
+        keep_mask: List[bool] = []
+        any_parsed = False
+        for ts in peak_timestamps:
+            dt = _parse_optional_dt(ts)
+            if dt is None:
+                keep_mask.append(False)
+                continue
+            any_parsed = True
+            keep_mask.append(window_start <= dt <= window_end)
+
+        if any_parsed:
+            keep_mask_np = np.array(keep_mask, dtype=bool)
+            window_peak_times = peak_times[keep_mask_np]
+            if len(window_peak_times) >= 2:
+                hr_rr = np.diff(window_peak_times) * 1000.0
+                hr_cleaning = clean_rr_intervals(hr_rr, config)
+                hr_rr_cleaned = hr_cleaning.rr_cleaned
+                hr_window_applied = True
+
+    if hr_window_applied and hr_rr_cleaned is not None:
+        mean_hr, std_hr, min_hr, max_hr = _compute_hr_stats_from_rr(hr_rr_cleaned)
+        time_domain = TimeDomainHRV(
+            mean_rr=time_domain.mean_rr,
+            sdnn=time_domain.sdnn,
+            rmssd=time_domain.rmssd,
+            pnn50=time_domain.pnn50,
+            mean_hr=mean_hr,
+            std_hr=std_hr,
+            min_hr=min_hr,
+            max_hr=max_hr,
+        )
+    else:
+        quality_notes.append("⚠ Mean HR computed from full 60s (central window unavailable)")
     
     # Compute frequency-domain metrics
     frequency_domain = compute_frequency_domain(rr_cleaned, config)
     
     # Add HR summary to notes
     if not np.isnan(time_domain.mean_hr):
+        label = "center 30s" if hr_window_applied else "full 60s"
         quality_notes.append(
-            f"✓ Mean HR: {time_domain.mean_hr:.1f} bpm "
+            f"✓ Mean HR ({label}): {time_domain.mean_hr:.1f} bpm "
             f"(range: {time_domain.min_hr:.0f}-{time_domain.max_hr:.0f})"
         )
     
