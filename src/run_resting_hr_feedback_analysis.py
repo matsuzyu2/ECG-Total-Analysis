@@ -92,6 +92,70 @@ def _segment_key_to_condition_phase(key: str) -> Tuple[str, str]:
     return condition, phase
 
 
+def _bf_type_to_condition_label(bf_type: str) -> str:
+    # BF_Type is expected to be "Inc" or "Dec".
+    if bf_type == "Inc":
+        return "Increase"
+    if bf_type == "Dec":
+        return "Decrease"
+    return "Unknown"
+
+
+def _write_condition_summary_html(
+    *,
+    results_root: Path,
+    condition_label: str,
+    session_ids: List[str],
+    output_html: Path,
+) -> None:
+    output_html.parent.mkdir(parents=True, exist_ok=True)
+
+    blocks: List[str] = []
+    for sid in session_ids:
+        src = f"./{sid}/resting_hr_feedback_comparison.html"
+        blocks.append(
+            "\n".join(
+                [
+                    '<div class="card">',
+                    f"  <div class=\"title\">{sid}</div>",
+                    f"  <iframe src=\"{src}\" loading=\"lazy\"></iframe>",
+                    "</div>",
+                ]
+            )
+        )
+
+    html = "\n".join(
+        [
+            "<!doctype html>",
+            "<html lang=\"en\">",
+            "<head>",
+            "  <meta charset=\"utf-8\" />",
+            "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />",
+            f"  <title>Resting HR Feedback Comparison - {condition_label}</title>",
+            "  <style>",
+            "    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; margin: 16px; }",
+            "    h1 { margin: 0 0 12px 0; font-size: 20px; }",
+            "    .meta { margin: 0 0 16px 0; color: #555; font-size: 13px; }",
+            "    .grid { display: flex; flex-wrap: wrap; gap: 12px; }",
+            "    .card { flex: 1 1 560px; border: 1px solid #ddd; border-radius: 8px; overflow: hidden; }",
+            "    .title { padding: 8px 10px; font-weight: 600; border-bottom: 1px solid #eee; background: #fafafa; }",
+            "    iframe { width: 100%; height: 520px; border: 0; }",
+            "  </style>",
+            "</head>",
+            "<body>",
+            f"  <h1>Resting HR Feedback Comparison ({condition_label})</h1>",
+            f"  <p class=\"meta\">Sessions: {len(session_ids)}</p>",
+            "  <div class=\"grid\">",
+            *blocks,
+            "  </div>",
+            "</body>",
+            "</html>",
+        ]
+    )
+
+    output_html.write_text(html, encoding="utf-8")
+
+
 def _plot_pre_post(metrics_df: pd.DataFrame, *, session_id: str, bf_type: str, output_html: Path) -> None:
     # Expect metrics_df contains rows for 4 segments with time_mean_hr.
     def get_value(condition: str, phase: str) -> float:
@@ -105,26 +169,26 @@ def _plot_pre_post(metrics_df: pd.DataFrame, *, session_id: str, bf_type: str, o
     target_pre = get_value("target", "pre")
     target_post = get_value("target", "post")
 
-    x_control = ["Control", "Control"]
-    x_target = ["Target", "Target"]
+    # Plot actual values for both phases so the direction of change is preserved.
+    x_phase = ["pre", "post"]
 
     fig = go.Figure()
 
     fig.add_trace(
         go.Scatter(
-            x=x_control,
+            x=x_phase,
             y=[control_pre, control_post],
             mode="markers+lines",
-            name="Control (pre→post)",
+            name="Control",
         )
     )
 
     fig.add_trace(
         go.Scatter(
-            x=x_target,
+            x=x_phase,
             y=[target_pre, target_post],
             mode="markers+lines",
-            name=f"Target (pre→post, BF_Type={bf_type})",
+            name=f"Target (BF_Type={bf_type})",
         )
     )
 
@@ -139,24 +203,26 @@ def _plot_pre_post(metrics_df: pd.DataFrame, *, session_id: str, bf_type: str, o
         d_target = float("nan")
 
     fig.update_layout(
-        title=f"Resting HR pre/post changes (session={session_id}, BF_Type={bf_type})",
-        xaxis_title="Condition",
+        title=f"Resting HR pre/post values (session={session_id}, BF_Type={bf_type})",
+        xaxis_title="Phase",
         yaxis_title="Mean HR (bpm)",
         hovermode="x unified",
     )
 
     fig.add_annotation(
-        x="Control",
+        x="post",
         y=max(control_pre, control_post) if pd.notna(control_pre) and pd.notna(control_post) else 0,
         text=f"Δ={d_control:+.2f} bpm" if pd.notna(d_control) else "Δ=NA",
         showarrow=False,
+        xshift=-40,
         yshift=20,
     )
     fig.add_annotation(
-        x="Target",
+        x="post",
         y=max(target_pre, target_post) if pd.notna(target_pre) and pd.notna(target_post) else 0,
         text=f"Δ={d_target:+.2f} bpm" if pd.notna(d_target) else "Δ=NA",
         showarrow=False,
+        xshift=40,
         yshift=20,
     )
 
@@ -232,6 +298,18 @@ def run_session(*, session_id: str, rebuild_extracted: bool, quiet: bool, allow_
     plot_html = results_dir / "resting_hr_feedback_comparison.html"
     _plot_pre_post(metrics_df, session_id=session_id, bf_type=session_info.bf_type, output_html=plot_html)
 
+    # Compute simple delta (Target pre→post) for reference.
+    def _get_value(condition: str, phase: str) -> float:
+        row = metrics_df[(metrics_df["condition"] == condition) & (metrics_df["phase"] == phase)]
+        if row.empty:
+            return float("nan")
+        return float(row.iloc[0]["time_mean_hr"])
+
+    target_pre = _get_value("target", "pre")
+    target_post = _get_value("target", "post")
+    delta_target = target_post - target_pre if pd.notna(target_pre) and pd.notna(target_post) else float("nan")
+    condition_label = _bf_type_to_condition_label(session_info.bf_type)
+
     if not quiet:
         print(f"\nSaved metrics: {metrics_csv}")
         print(f"Saved plot:    {plot_html}")
@@ -241,6 +319,8 @@ def run_session(*, session_id: str, rebuild_extracted: bool, quiet: bool, allow_
         "Date": session_info.date_str,
         "Subject": session_info.subject_id,
         "BF_Type": session_info.bf_type,
+        "delta_target_bpm": float(delta_target) if pd.notna(delta_target) else float("nan"),
+        "condition_label": condition_label,
     }
     return session_meta, missing_keys
 
@@ -268,6 +348,7 @@ def main() -> int:
             return 1
         failures: List[Tuple[str, str]] = []
         missing_rows: List[dict] = []
+        session_metas: List[dict] = []
         results_root = Config().get_results_dir()
         report_path = results_root / "resting_hr_feedback_missing_segments.csv"
 
@@ -279,6 +360,7 @@ def main() -> int:
                     quiet=args.quiet,
                     allow_missing_segments=True,
                 )
+                session_metas.append(session_meta)
                 for key in missing_keys:
                     row = dict(session_meta)
                     row["missing_segment_key"] = key
@@ -296,6 +378,23 @@ def main() -> int:
         if not args.quiet:
             print(f"Missing-segment report: {report_path}")
 
+        # Create simple condition-wise summary pages that lay out per-session plots.
+        by_label: Dict[str, List[str]] = {"Increase": [], "Decrease": []}
+        for meta in session_metas:
+            sid = str(meta.get("session_id"))
+            label = str(meta.get("condition_label"))
+            if label in by_label:
+                by_label[label].append(sid)
+
+        for label, sids in by_label.items():
+            out = results_root / f"resting_hr_feedback_comparison_{label}.html"
+            _write_condition_summary_html(
+                results_root=results_root,
+                condition_label=label,
+                session_ids=sorted(sids),
+                output_html=out,
+            )
+
         if failures:
             print("=" * 70)
             print(f"Completed with failures: {len(failures)}/{len(sessions)}")
@@ -305,7 +404,7 @@ def main() -> int:
 
         return 0
 
-        run_session(
+    run_session(
         session_id=args.session,
         rebuild_extracted=args.rebuild_extracted,
         quiet=args.quiet,
