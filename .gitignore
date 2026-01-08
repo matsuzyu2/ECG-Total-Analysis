@@ -42,7 +42,8 @@ venv.bak/
 # Data files (except examples, conditions may apply)
 Data/*
 !Data/Example/
-!Data/Condition/
+!Data/Subject/
+!Data/Timestamp/
 Results/
 
 # Reference files
