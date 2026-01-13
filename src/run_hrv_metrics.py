@@ -241,7 +241,7 @@ Examples:
         "segment_name", "session_id", "duration_sec", 
         "n_beats", "n_valid_intervals", "removal_rate",
         "time_mean_rr", "time_sdnn", "time_rmssd", "time_pnn50",
-        "time_mean_hr", "time_std_hr", "time_min_hr", "time_max_hr",
+        "time_mean_hr", "time_median_hr", "time_std_hr", "time_min_hr", "time_max_hr",
         "freq_vlf_power", "freq_lf_power", "freq_hf_power", "freq_total_power",
         "freq_lf_norm", "freq_hf_norm", "freq_lf_hf_ratio",
         "quality_notes",
@@ -267,7 +267,7 @@ Examples:
         print("HRV Summary (Time Domain)")
         print("-" * 60)
         
-        summary_cols = ["segment_name", "time_mean_hr", "time_sdnn", "time_rmssd", "time_pnn50"]
+        summary_cols = ["segment_name", "time_mean_hr", "time_median_hr", "time_sdnn", "time_rmssd", "time_pnn50"]
         available_cols = [c for c in summary_cols if c in df.columns]
         
         if available_cols:
