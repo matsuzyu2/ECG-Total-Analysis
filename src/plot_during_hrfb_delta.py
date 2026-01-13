@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Plot during-HRFB delta summary (Last5 - First5) as a static SVG.
+"""Plot during-HRFB delta summary (Last5 - Pre5) using median HR as a static SVG.
 
 Reads per-session outputs created by `run_during_hrfb_analysis.py`:
 - Results/<session_id>/during_hrfb_metrics.csv
 
 Delta definition:
-  Delta = MeanHR(Last5) - MeanHR(First5)
+    Delta = MedianHR(Last5) - MedianHR(Pre5)
 
 X-axis categories (ordered):
 - Control (Dec group)
@@ -41,8 +41,8 @@ class SubjectDeltas:
     subject_id: str
     session_id: str
     bf_type: str  # Inc / Dec
-    control_delta: float  # Last5 - First5
-    target_delta: float  # Last5 - First5
+    control_delta: float  # Last5 - Pre5
+    target_delta: float  # Last5 - Pre5
 
 
 def _project_root() -> Path:
@@ -71,12 +71,12 @@ def _get_mean_hr(df: pd.DataFrame, *, condition: str, phase: str) -> float:
     row = df[(df["condition"] == condition) & (df["phase"] == phase)]
     if row.empty:
         return float("nan")
-    return _safe_float(row.iloc[0].get("time_mean_hr"))
+    return _safe_float(row.iloc[0].get("time_median_hr"))
 
 
 def _read_subject_deltas(metrics_csv: Path) -> Optional[SubjectDeltas]:
     df = pd.read_csv(metrics_csv)
-    required = {"condition", "phase", "time_mean_hr", "BF_Type", "Subject"}
+    required = {"condition", "phase", "time_median_hr", "BF_Type", "Subject"}
     missing = required - set(df.columns)
     if missing:
         raise ValueError(f"Missing columns in {metrics_csv}: {sorted(missing)}")
@@ -85,9 +85,9 @@ def _read_subject_deltas(metrics_csv: Path) -> Optional[SubjectDeltas]:
     subject_id = str(df["Subject"].dropna().iloc[0]) if df["Subject"].notna().any() else ""
     session_id = metrics_csv.parent.name
 
-    control_first = _get_mean_hr(df, condition="Control", phase="First5")
+    control_first = _get_mean_hr(df, condition="Control", phase="Pre5")
     control_last = _get_mean_hr(df, condition="Control", phase="Last5")
-    target_first = _get_mean_hr(df, condition="Target", phase="First5")
+    target_first = _get_mean_hr(df, condition="Target", phase="Pre5")
     target_last = _get_mean_hr(df, condition="Target", phase="Last5")
 
     control_delta = control_last - control_first if pd.notna(control_first) and pd.notna(control_last) else float("nan")
@@ -242,7 +242,7 @@ def plot_delta(*, results_dir: Path, output_svg: Path) -> None:
         )
 
     ax.set_xlabel("")
-    ax.set_ylabel("Δ HR (bpm): Last5 − First5")
+    ax.set_ylabel("Δ Median HR (bpm): Last5 − Pre5")
     ax.set_ylim(-y_lim, y_lim)
     ax.set_xticks(np.arange(len(categories)))
     ax.set_xticklabels(display_labels)
@@ -254,7 +254,7 @@ def plot_delta(*, results_dir: Path, output_svg: Path) -> None:
     ]
     ax.legend(handles=legend_items, frameon=False, loc="upper right")
 
-    ax.set_title("During HRFB ΔHR (Last5 − First5)")
+    ax.set_title("During HRFB ΔMedianHR (Last5 − Pre5)")
 
     output_svg.parent.mkdir(parents=True, exist_ok=True)
     fig.tight_layout()

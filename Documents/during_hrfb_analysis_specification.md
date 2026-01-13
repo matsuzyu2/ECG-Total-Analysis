@@ -9,17 +9,17 @@
 ### 目的
 本機能は、**心拍フィードバック（HRFB）中の心拍変化**に注目し、各HRFBセッションにおける
 
-- **開始直後5分（First5: 0–5分）**
-- **終了直前5分（Last5: 10–15分）**
+- **開始前5分（Pre5: -5–0分）**
+ - **終了直前5分（Last5: 10–15分）**
 
-の2区間を抽出して **平均心拍（Mean HR）** を算出し、
-**Delta = Last5 − First5** として「開始から終了に向けて心拍がどう変化したか」を比較・可視化します。
+の2区間を抽出して **中央値心拍（Median HR）** を算出し、
+**Delta = Last5 − Pre5** として「開始前ベースラインから終了に向けて心拍がどう変化したか」を比較・可視化します。
 
 ### 関連する主要スクリプト
 - `src/run_during_hrfb_analysis.py`
-  - HRFB中のFirst5/Last5セグメントの切り出し → Rピーク検出 → 指標計算 → セッション別CSV出力
+  - HRFB中のPre5/Last5セグメントの切り出し → Rピーク検出 → 指標計算 → セッション別CSV出力
 - `src/plot_during_hrfb_delta.py`
-  - セッション別CSVを集約し、Deltaを計算して Box + Swarm の静的SVGを出力
+  - セッション別CSVを集約し、Delta（Last5−Pre5）を計算して Box + Swarm の静的SVGを出力
 
 ---
 
@@ -81,7 +81,7 @@ Target/Control 判定ロジック（Orderによる）:
 #### 新規追加API: `split_segment_by_start_and_duration`
 目的:
 - **任意の開始HHMM + 継続時間**でECGを切り出すための汎用API。
-- During HRFB（First5/Last5）のように、既存の「Feedback_*」列名に依存しないウィンドウ定義に対応します。
+- During HRFB（Pre5/Last5）のように、既存の「Feedback_*」列名に依存しないウィンドウ定義に対応します。
 
 関数シグネチャ（概略）:
 - `split_segment_by_start_and_duration(session_id, extracted_csv_path, segment_key, start_hhmm, duration_sec, start_offset_sec=0, buffer_sec=15, chunksize=..., allow_missing=False) -> Path | None`
@@ -92,7 +92,7 @@ Target/Control 判定ロジック（Orderによる）:
 - `start_offset_sec`:
   - HHMMに対してさらに秒オフセットを加算します（例: Last5用に +600秒）。
 - `duration_sec`:
-  - 元の計測区間（paddingを除いた区間）の長さ（During HRFBでは 300秒）。
+  - 元の計測区間（paddingを除いた区間）の長さ（During HRFBでは 60秒）。
 - `buffer_sec`:
   - フィルタ端のアーティファクト対策として、抽出時に前後へ付与するpadding（秒）。
   - `run_during_hrfb_analysis.py` 側からは `Config.FILTER_PADDING_SEC` を渡します。
@@ -118,15 +118,15 @@ Target/Control 判定ロジック（Orderによる）:
 
 ### 2. run_during_hrfb_analysis.py（解析処理）
 
-#### セグメント定義（First5 / Last5）
+#### セグメント定義（Pre5 / Last5）
 各セッションにつき、以下4セグメントを処理します（合計4行を出力する設計）。
 
 - HRFB_1:
-  - `during_HRFB1_First5`: `start_offset_sec = 0`, `duration_sec = 300`
-  - `during_HRFB1_Last5`:  `start_offset_sec = 600`, `duration_sec = 300`
+  - `during_HRFB1_Pre5`:  `start_offset_sec = -300`, `duration_sec = 300`
+  - `during_HRFB1_Last5`: `start_offset_sec = 600`, `duration_sec = 300`
 - HRFB_2:
-  - `during_HRFB2_First5`: `start_offset_sec = 0`, `duration_sec = 300`
-  - `during_HRFB2_Last5`:  `start_offset_sec = 600`, `duration_sec = 300`
+  - `during_HRFB2_Pre5`:  `start_offset_sec = -300`, `duration_sec = 300`
+  - `during_HRFB2_Last5`: `start_offset_sec = 600`, `duration_sec = 300`
 
 padding（buffer）:
 - 切り出し時に `Config.FILTER_PADDING_SEC` 秒のpaddingを付けて抽出します。
@@ -147,7 +147,7 @@ padding（buffer）:
   - それ以外/取得不可: `Unknown`
 
 注意:
-- `segment_key`（例: `during_HRFB1_First5`）は物理的識別子であり、Target/Controlは含めません。
+- `segment_key`（例: `during_HRFB1_Pre5`）は物理的識別子であり、Target/Controlは含めません。
   解析結果CSV内の `condition` 列が意味ラベル（Target/Control）を担います。
 
 #### 指標計算とフォールバック
@@ -159,11 +159,11 @@ padding（buffer）:
 3. `run_hrv_metrics.process_peaks_file(peaks_path, ...)` でHRV指標を計算
    - `metrics.to_flat_dict()` によりフラットな辞書へ展開
 
-`time_mean_hr` の取得優先順位（フォールバック）:
-- `time_mean_hr`（最優先）
-- `mean_hr`
-- `meanHR`
-- `hr_mean`
+`time_median_hr` の取得優先順位（フォールバック）:
+- `time_median_hr`（最優先）
+- `median_hr`
+- `medianHR`
+- `hr_median`
 - いずれも無い/変換できない場合は `NaN`
 
 #### エラーハンドリング（NaN行を残す仕様）
@@ -182,8 +182,8 @@ padding（buffer）:
 - `metrics_failed`: `process_peaks_file` が失敗
 
 出力行数:
-- 原則として各セッション **4行**（HRFB_1/2 × First5/Last5）を出力することを意図しています。
-  （欠損でも行は残り、`time_mean_hr` は NaN になります）
+- 原則として各セッション **4行**（HRFB_1/2 × Pre5/Last5）を出力することを意図しています。
+  （欠損でも行は残り、`time_median_hr` は NaN になります）
 
 ---
 
@@ -191,15 +191,15 @@ padding（buffer）:
 
 #### Deltaの定義
 - Delta はセッション内・条件別に以下で定義します:
-  - `Delta = MeanHR(Last5) − MeanHR(First5)`
-- MeanHR は `during_hrfb_metrics.csv` の `time_mean_hr` を使用します。
+  - `Delta = MedianHR(Last5) − MedianHR(Pre5)`
+- MedianHR は `during_hrfb_metrics.csv` の `time_median_hr` を使用します。
 
 #### 入力と集約
 - 入力: `Results/<session_id>/during_hrfb_metrics.csv`
-- 必須列: `condition`, `phase`, `time_mean_hr`, `BF_Type`, `Subject`
+- 必須列: `condition`, `phase`, `time_median_hr`, `BF_Type`, `Subject`
 - 各セッションから以下2値を算出:
-  - `control_delta`（ControlのLast5−First5）
-  - `target_delta`（TargetのLast5−First5）
+  - `control_delta`（ControlのLast5−Pre5）
+  - `target_delta`（TargetのLast5−Pre5）
 - `BF_Type` が `Dec` または `Inc` のセッションのみプロット対象（それ以外は除外）
 
 #### プロット仕様
@@ -220,7 +220,7 @@ X軸カテゴリ（並び順は固定）:
 - Box plot + Swarm plot（カテゴリごとにスウォーム点を重ねる）
 - 各カテゴリに平均±SE（標準誤差）をエラーバーで重ね描き
 - y軸は対称レンジ（データ最大絶対値 × 1.15、ただし最低±1.0）
-- yラベル: `Δ HR (bpm): Last5 − First5`
+- yラベル: `Δ Median HR (bpm): Last5 − Pre5`
 
 #### 出力形式
 - 静的SVGとして保存（HTMLは出力しない）
@@ -242,12 +242,12 @@ X軸カテゴリ（並び順は固定）:
 - `Order`: 1/2（取得不能時は空/NaN）
 - `hrfb_index`: 1 または 2
 - `condition`: `Target` / `Control` / `Unknown`
-- `phase`: `First5` / `Last5`
-- `time_mean_hr`: 平均心拍（bpm）。欠損/失敗時はNaN
+- `phase`: `Pre5` / `Last5`
+- `time_median_hr`: 中央値心拍（bpm）。欠損/失敗時はNaN
 - `status`: 処理状態（ok / missing_timestamp / ...）
 - `error_msg`: 失敗理由（空文字の場合あり）
 - `quality_notes`: 品質メモ（計算できた場合に限り値が入ることがある）
-- `segment_key`: 例 `during_HRFB1_First5`
+- `segment_key`: 例 `during_HRFB1_Pre5`
 
 補足:
 - `metrics.to_flat_dict()` の内容が追加列としてCSVに含まれる場合があります（HRV指標など）。
@@ -291,7 +291,7 @@ X軸カテゴリ（並び順は固定）:
 
 心拍変化量（ΔHR）の定義:
 
-- `ΔHR = time_mean_hr(Last5) − time_mean_hr(First5)`（単位: bpm）
+- `ΔHR = time_median_hr(Last5) − time_median_hr(Pre5)`（単位: bpm）
 
 ### 2. データ処理（Data Processing）
 
@@ -301,17 +301,17 @@ X軸カテゴリ（並び順は固定）:
 
 #### 前処理・集計
 1. `Results/<session_id>/during_hrfb_metrics.csv` を全セッション分読み込み、1つのDataFrameに結合します。
-2. `phase`（`First5` / `Last5`）と `condition`（`Control` / `Target`）ごとに `time_mean_hr` を取り出し、
+2. `phase`（`Pre5` / `Last5`）と `condition`（`Control` / `Target`）ごとに `time_median_hr` を取り出し、
    セッション・条件単位で ΔHR を算出します。
-   - `Control ΔHR = Control(Last5) − Control(First5)`
-   - `Target ΔHR  = Target(Last5) − Target(First5)`
+  - `Control ΔHR = Control(Last5) − Control(Pre5)`
+  - `Target ΔHR  = Target(Last5) − Target(Pre5)`
 3. `BF_Type` により `Inc` / `Dec` に分け、群ごとに検定を行います。
 
 #### 欠損値の扱い（Drop NaN）
 - paired解析のため、**同一セッション内で Target と Control の両方の ΔHR がそろっている行のみ**を使用します。
 - 具体的には、以下のいずれかが欠損・非数（NaN/inf）のセッションは自動的に除外されます。
-  - `Control(First5)` / `Control(Last5)`
-  - `Target(First5)` / `Target(Last5)`
+  - `Control(Pre5)` / `Control(Last5)`
+  - `Target(Pre5)` / `Target(Last5)`
   - それらから計算される `Control ΔHR` / `Target ΔHR`
 
 ### 3. 検定アルゴリズム（Testing Logic）
@@ -366,4 +366,102 @@ X軸カテゴリ（並び順は固定）:
 - 処理対象のセッション数（`during_hrfb_metrics.csv` が存在する数）
 - 検定が完了した旨
 - 保存したレポートファイルのパス（`Saved report to: ...`）
+
+---
+
+## F. 仕様変更（Specification Update）- Comparison Logic Revision
+
+直近の修正（ブランチ `Feature/Fix-comparison-HRFB-start`）により、
+比較対象が「最初5分（First5）」から「開始前5分（Pre5/Baseline）」に変更されました。
+本セクションでは、この変更に伴う技術仕様の更新点を定義します。
+
+### 1. セグメント定義の変更（Segment Definition Update）
+
+#### 旧仕様
+- First5: `Start + 0min` 〜 `Start + 5min`
+
+#### 新仕様
+- **Pre5**: `Start - 5min` 〜 `Start + 0min`
+
+#### 実装詳細
+- `src/run_during_hrfb_analysis.py` の `run_session()` におけるセグメント定義を更新し、
+  `phase` を `First5` から **`Pre5`** に変更しました。
+- `start_offset_sec` を `0.0` から **`-300.0`（-5分）** に変更し、HRFB開始前のベースライン区間を切り出します。
+- `duration_sec` は **`300.0`（5分）** のまま維持します。
+- `split_segment_by_start_and_duration` は `timedelta(seconds=...)` によりオフセットを扱うため、
+  **負のオフセット（開始前区間）も処理可能**です。
+
+#### Last5 の扱い
+- **Last5 は変更なし**: `Start + 10min` 〜 `Start + 15min`（`start_offset_sec=600.0`, `duration_sec=300.0`）
+
+### 2. 指標計算の更新（Metric Calculation Update）
+
+#### Delta（ΔHR）の定義
+- 旧: `ΔHR = time_mean_hr(Last5) − time_mean_hr(First5)`
+- 新: **`ΔHR = time_mean_hr(Last5) − time_mean_hr(Pre5)`**
+
+#### 目的
+この変更により、心拍FB「実施中の前半→後半の変化」ではなく、
+**開始前ベースライン（Pre5）から終了直前（Last5）への変化量**を評価できるようになります。
+
+### 3. 統計解析への影響（Impact on Statistical Analysis）
+
+- `src/plot_during_hrfb_delta.py` は、`phase="Pre5"` をベースラインとして読み込み、
+  **Delta = Last5 − Pre5** で集計・描画します。
+  - グラフタイトルおよびY軸ラベルの表記も `Last5 − Pre5` に更新されます。
+- `src/run_during_hrfb_stats.py` は、集計時に `Pre5` と `Last5` を用いて **Delta = Last5 − Pre5** を算出し、
+  BF_Type（Inc/Dec）ごとに Target vs Control の **対応のある検定**を実施します。
+
+#### データ欠損時の挙動
+- Pre5（開始前）の録画データが存在しない場合（例: 録画開始直後にHRFBが開始した等）は、
+  `run_during_hrfb_analysis.py` 側でセグメント抽出ができず `NaN`（または `missing_segment` 等）になります。
+- `run_during_hrfb_stats.py` の paired解析では、**Target と Control の ΔHR が両方そろっているセッションのみ**を使用するため、
+  Pre5 欠損などで ΔHR が計算できないセッションは **自動的に統計から除外**されます（処理は停止しません）。
+
+---
+
+## G. 仕様変更（Specification Update）- Window Shortening & Median HR
+
+直近の修正（ブランチ `Feature/Fix-mean-to-medium`）により、
+解析ウィンドウが **5分 → 1分** に短縮され、代表値が **平均（Mean）→ 中央値（Median）** に変更されました。
+
+### 1. セグメント定義の変更（Segment Definition Update）
+
+#### 旧仕様（Pre5/Last5）
+- Pre5: `Start - 5min` 〜 `Start + 0min`（`start_offset_sec=-300`, `duration_sec=300`）
+- Last5: `Start + 10min` 〜 `Start + 15min`（`start_offset_sec=600`, `duration_sec=300`）
+
+#### 新仕様（Pre5/Last5）
+- **Pre5**: `Start - 5min` 〜 `Start + 0min`（`start_offset_sec=-300`, `duration_sec=300`）
+- **Last5**: `Start + 10min` 〜 `Start + 15min`（`start_offset_sec=600`, `duration_sec=300`）
+
+実装上は、`split_segment_by_start_and_duration` に対して上記の `start_offset_sec` / `duration_sec` を渡します。
+
+### 2. 指標（列）の変更（Metric / Column Update）
+
+#### 旧仕様
+- `time_mean_hr`（平均心拍）を主要指標として使用
+
+#### 新仕様
+- **`time_median_hr`（中央値心拍）を主要指標として使用**
+- `during_hrfb_metrics.csv` の `time_median_hr` 列が、可視化・統計の参照元になります
+
+### 3. Delta（ΔHR）の定義変更
+
+- 旧: `ΔHR = time_mean_hr(Last5) − time_mean_hr(Pre5)`
+- 新: **`ΔHR = time_median_hr(Last5) − time_median_hr(Pre5)`**
+
+### 4. 下流処理（plot/stats）への影響
+
+- `src/plot_during_hrfb_delta.py`
+  - `phase="Pre5"` と `phase="Last5"` を用いて集計し、`time_median_hr` から ΔHR を計算します。
+  - y軸ラベルは `Last5 − Pre5`（Median HR）表記になります。
+- `src/run_during_hrfb_stats.py`
+  - `Pre5` / `Last5` と `time_median_hr` を用いて ΔHR を算出し、Inc/Dec別に Target vs Control の paired検定を実施します。
+
+### 5. データ欠損時の挙動
+
+- Pre5 が録画範囲外（例: HRFB開始が録画開始直後）などの場合、`time_median_hr` は NaN になりえます。
+- paired解析では Target/Control の両方の ΔHR が揃うセッションのみを使用するため、欠損があるセッションは自動除外されます（処理は停止しません）。
+
 
