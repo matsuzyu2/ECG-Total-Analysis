@@ -277,3 +277,93 @@ X軸カテゴリ（並び順は固定）:
 
 可視化（SVG）:
 - `python src/plot_during_hrfb_delta.py --results-dir Results --output Results/during_hrfb_delta_summary.svg`
+
+---
+
+## E. 統計解析（Statistical Analysis）
+
+### 1. 概要（Overview）
+
+- スクリプト: `src/run_during_hrfb_stats.py`
+- 目的: Increase群（`BF_Type = Inc`）および Decrease群（`BF_Type = Dec`）それぞれにおいて、
+  **Target条件とControl条件の間で心拍変化量（ΔHR）に有意差があるか**を検証します。
+- 検定は **被験者内対応（Paired）** を前提とし、各セッションで得られた Target と Control の ΔHR を対応づけて比較します。
+
+心拍変化量（ΔHR）の定義:
+
+- `ΔHR = time_mean_hr(Last5) − time_mean_hr(First5)`（単位: bpm）
+
+### 2. データ処理（Data Processing）
+
+#### 入力
+- 全セッションの `Results/{session_id}/during_hrfb_metrics.csv`
+  - 解析スクリプト `run_during_hrfb_analysis.py` の出力を前提とします。
+
+#### 前処理・集計
+1. `Results/<session_id>/during_hrfb_metrics.csv` を全セッション分読み込み、1つのDataFrameに結合します。
+2. `phase`（`First5` / `Last5`）と `condition`（`Control` / `Target`）ごとに `time_mean_hr` を取り出し、
+   セッション・条件単位で ΔHR を算出します。
+   - `Control ΔHR = Control(Last5) − Control(First5)`
+   - `Target ΔHR  = Target(Last5) − Target(First5)`
+3. `BF_Type` により `Inc` / `Dec` に分け、群ごとに検定を行います。
+
+#### 欠損値の扱い（Drop NaN）
+- paired解析のため、**同一セッション内で Target と Control の両方の ΔHR がそろっている行のみ**を使用します。
+- 具体的には、以下のいずれかが欠損・非数（NaN/inf）のセッションは自動的に除外されます。
+  - `Control(First5)` / `Control(Last5)`
+  - `Target(First5)` / `Target(Last5)`
+  - それらから計算される `Control ΔHR` / `Target ΔHR`
+
+### 3. 検定アルゴリズム（Testing Logic）
+
+本スクリプトは、既存の統計ロジック `src/run_group_stats.py` 内の `_paired_test` を再利用します。
+
+群（`Inc` / `Dec`）ごとに、以下の手順で対応のある2群比較を実施します。
+
+1) 正規性の確認
+- Shapiro-Wilk検定を使用します。
+- 対象は **対応差**（paired difference）で、`diff = Target ΔHR − Control ΔHR` を用います。
+- 有意水準（alpha）はデフォルト `0.05`（`--alpha` で変更可能）です。
+
+2) 検定手法の選択
+- 正規性あり（`Shapiro p ≥ alpha`）:
+  - **対応のある t 検定（Paired t-test）** を実施します。
+- 正規性なし（`Shapiro p < alpha` または正規性判定不能）:
+  - **Wilcoxon 符号付順位検定（Wilcoxon signed-rank test）** を実施します。
+
+補足:
+- ペア数が小さい場合（`n < 3`）は、統計量・p値等を `N/A` 相当としてレポート出力します。
+
+3) 判定基準
+- **p値 < 0.05** を統計的に有意（「有意差あり」）とみなします。
+
+### 4. 出力仕様（Outputs）
+
+#### A. レポート（Markdown）
+- 出力ファイル: `Results/during_hrfb_stats_report.md`
+- 形式: Markdown
+- 主な構成:
+  - 概要（データソース、ΔHRの定義、Paired比較であること）
+  - 検定手法（Shapiro → t検定/Wilcoxon の自動選択）
+  - 結果テーブル（Markdown Table）
+
+テーブルに含まれる項目（列）:
+- 群（Group / BF_Type）
+- N（ペア数）
+- Control ΔHR（平均±SD）
+- Target ΔHR（平均±SD）
+- 平均差（Target−Control）
+- Shapiro p
+- 検定手法（Test）
+- 統計量（Statistic）
+- p値（p-value）
+- 判定（p<0.05; 「有意差あり/なし」）
+
+#### B. コンソール出力
+画面の見やすさを優先し、詳細な統計数値はコンソールに出力しません。
+出力するのは以下の実行ステータスのみです。
+
+- 処理対象のセッション数（`during_hrfb_metrics.csv` が存在する数）
+- 検定が完了した旨
+- 保存したレポートファイルのパス（`Saved report to: ...`）
+
