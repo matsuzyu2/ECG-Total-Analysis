@@ -367,3 +367,55 @@ X軸カテゴリ（並び順は固定）:
 - 検定が完了した旨
 - 保存したレポートファイルのパス（`Saved report to: ...`）
 
+---
+
+## F. 仕様変更（Specification Update）- Comparison Logic Revision
+
+直近の修正（ブランチ `Feature/Fix-comparison-HRFB-start`）により、
+比較対象が「最初5分（First5）」から「開始前5分（Pre5/Baseline）」に変更されました。
+本セクションでは、この変更に伴う技術仕様の更新点を定義します。
+
+### 1. セグメント定義の変更（Segment Definition Update）
+
+#### 旧仕様
+- First5: `Start + 0min` 〜 `Start + 5min`
+
+#### 新仕様
+- **Pre5**: `Start - 5min` 〜 `Start + 0min`
+
+#### 実装詳細
+- `src/run_during_hrfb_analysis.py` の `run_session()` におけるセグメント定義を更新し、
+  `phase` を `First5` から **`Pre5`** に変更しました。
+- `start_offset_sec` を `0.0` から **`-300.0`（-5分）** に変更し、HRFB開始前のベースライン区間を切り出します。
+- `duration_sec` は **`300.0`（5分）** のまま維持します。
+- `split_segment_by_start_and_duration` は `timedelta(seconds=...)` によりオフセットを扱うため、
+  **負のオフセット（開始前区間）も処理可能**です。
+
+#### Last5 の扱い
+- **Last5 は変更なし**: `Start + 10min` 〜 `Start + 15min`（`start_offset_sec=600.0`, `duration_sec=300.0`）
+
+### 2. 指標計算の更新（Metric Calculation Update）
+
+#### Delta（ΔHR）の定義
+- 旧: `ΔHR = time_mean_hr(Last5) − time_mean_hr(First5)`
+- 新: **`ΔHR = time_mean_hr(Last5) − time_mean_hr(Pre5)`**
+
+#### 目的
+この変更により、心拍FB「実施中の前半→後半の変化」ではなく、
+**開始前ベースライン（Pre5）から終了直前（Last5）への変化量**を評価できるようになります。
+
+### 3. 統計解析への影響（Impact on Statistical Analysis）
+
+- `src/plot_during_hrfb_delta.py` は、`phase="Pre5"` をベースラインとして読み込み、
+  **Delta = Last5 − Pre5** で集計・描画します。
+  - グラフタイトルおよびY軸ラベルの表記も `Last5 − Pre5` に更新されます。
+- `src/run_during_hrfb_stats.py` は、集計時に `Pre5` と `Last5` を用いて **Delta = Last5 − Pre5** を算出し、
+  BF_Type（Inc/Dec）ごとに Target vs Control の **対応のある検定**を実施します。
+
+#### データ欠損時の挙動
+- Pre5（開始前）の録画データが存在しない場合（例: 録画開始直後にHRFBが開始した等）は、
+  `run_during_hrfb_analysis.py` 側でセグメント抽出ができず `NaN`（または `missing_segment` 等）になります。
+- `run_during_hrfb_stats.py` の paired解析では、**Target と Control の ΔHR が両方そろっているセッションのみ**を使用するため、
+  Pre5 欠損などで ΔHR が計算できないセッションは **自動的に統計から除外**されます（処理は停止しません）。
+
+

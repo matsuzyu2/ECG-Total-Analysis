@@ -4,9 +4,9 @@
 This script mirrors the structure of `run_resting_hr_feedback_analysis.py`, but
 uses Timestamp_2.csv columns HRFB_1 / HRFB_2 to extract during-feedback windows.
 
-For each HRFB start time (HRFB_1 and HRFB_2), we compute two 5-min windows from
-a 15-min feedback period:
-- First5:  start + 0 min  to + 5 min
+For each HRFB start time (HRFB_1 and HRFB_2), we compute two 5-min windows
+relative to the feedback start time:
+- Pre5:    start - 5 min  to start
 - Last5:   start + 10 min to + 15 min
 
 Each window is extracted with ±padding for filter edge artifacts, then processed
@@ -186,7 +186,7 @@ def run_session(*, session_id: str, rebuild_extracted: bool, quiet: bool) -> Pat
     for hrfb_index in [1, 2]:
         col = f"HRFB_{hrfb_index}"
         hhmm = hrfb.get(col)
-        for phase, start_offset_sec in [("First5", 0.0), ("Last5", 10.0 * 60.0)]:
+        for phase, start_offset_sec in [("Pre5", -5.0 * 60.0), ("Last5", 10.0 * 60.0)]:
             segment_specs.append(
                 {
                     "hrfb_index": hrfb_index,
@@ -202,7 +202,7 @@ def run_session(*, session_id: str, rebuild_extracted: bool, quiet: bool) -> Pat
 
     for spec in segment_specs:
         hrfb_index = int(spec["hrfb_index"])
-        phase = str(spec["phase"])  # First5 / Last5
+        phase = str(spec["phase"])  # Pre5 / Last5
         start_hhmm = spec["start_hhmm"]
         start_offset_sec = float(spec["start_offset_sec"])
         duration_sec = float(spec["duration_sec"])

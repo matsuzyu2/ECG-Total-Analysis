@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run paired statistical tests for During-HRFB delta (Last5 - First5).
+"""Run paired statistical tests for During-HRFB delta (Last5 - Pre5).
 
 This script consumes per-session outputs produced by:
   - src/run_during_hrfb_analysis.py
@@ -8,7 +8,7 @@ Data source:
   Results/<session_id>/during_hrfb_metrics.csv
 
 Delta definition (per session, per condition):
-  delta = time_mean_hr(Last5) - time_mean_hr(First5)
+    delta = time_mean_hr(Last5) - time_mean_hr(Pre5)
 
 Tests (paired within subject/session):
   - BF_Type = Inc: Target delta vs Control delta (paired)
@@ -92,7 +92,7 @@ def _compute_session_condition_deltas(all_df: pd.DataFrame) -> pd.DataFrame:
     df["phase"] = df["phase"].astype(str)
     df["condition"] = df["condition"].astype(str)
 
-    df = df[df["phase"].isin(["First5", "Last5"])].copy()
+    df = df[df["phase"].isin(["Pre5", "Last5"])].copy()
     df = df[df["condition"].isin(["Control", "Target"])].copy()
 
     # Deduplicate within each session/condition/phase by taking the first non-null value.
@@ -113,7 +113,15 @@ def _compute_session_condition_deltas(all_df: pd.DataFrame) -> pd.DataFrame:
         aggfunc="first",
     ).reset_index()
 
-    wide_phase["delta"] = wide_phase.get("Last5") - wide_phase.get("First5")
+    # Ensure expected phase columns exist (missing -> NaN)
+    if "Pre5" not in wide_phase.columns:
+        wide_phase["Pre5"] = np.nan
+    if "Last5" not in wide_phase.columns:
+        wide_phase["Last5"] = np.nan
+
+    wide_phase["delta"] = pd.to_numeric(wide_phase["Last5"], errors="coerce") - pd.to_numeric(
+        wide_phase["Pre5"], errors="coerce"
+    )
 
     # Pivot condition -> columns
     out = wide_phase.pivot_table(
@@ -207,7 +215,7 @@ def _render_report(*, session_count: int, wide: pd.DataFrame, inc_row: dict, dec
     lines.append("本レポートは、心拍FB中の心拍変化量（ΔHR）が Target 条件と Control 条件で異なるかを検定します。")
     lines.append("")
     lines.append("- データソース: `Results/<session_id>/during_hrfb_metrics.csv`")
-    lines.append("- ΔHR 定義（セッション・条件ごと）: `ΔHR = time_mean_hr(Last5) − time_mean_hr(First5)`（単位: bpm）")
+    lines.append("- ΔHR 定義（セッション・条件ごと）: `ΔHR = time_mean_hr(Last5) − time_mean_hr(Pre5)`（単位: bpm）")
     lines.append("- 比較は被験者内対応（Paired）: Target の ΔHR vs Control の ΔHR")
     lines.append("")
 

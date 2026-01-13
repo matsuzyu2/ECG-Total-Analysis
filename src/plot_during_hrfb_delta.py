@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Plot during-HRFB delta summary (Last5 - First5) as a static SVG.
+"""Plot during-HRFB delta summary (Last5 - Pre5) as a static SVG.
 
 Reads per-session outputs created by `run_during_hrfb_analysis.py`:
 - Results/<session_id>/during_hrfb_metrics.csv
 
 Delta definition:
-  Delta = MeanHR(Last5) - MeanHR(First5)
+    Delta = MeanHR(Last5) - MeanHR(Pre5)
 
 X-axis categories (ordered):
 - Control (Dec group)
@@ -85,9 +85,9 @@ def _read_subject_deltas(metrics_csv: Path) -> Optional[SubjectDeltas]:
     subject_id = str(df["Subject"].dropna().iloc[0]) if df["Subject"].notna().any() else ""
     session_id = metrics_csv.parent.name
 
-    control_first = _get_mean_hr(df, condition="Control", phase="First5")
+    control_first = _get_mean_hr(df, condition="Control", phase="Pre5")
     control_last = _get_mean_hr(df, condition="Control", phase="Last5")
-    target_first = _get_mean_hr(df, condition="Target", phase="First5")
+    target_first = _get_mean_hr(df, condition="Target", phase="Pre5")
     target_last = _get_mean_hr(df, condition="Target", phase="Last5")
 
     control_delta = control_last - control_first if pd.notna(control_first) and pd.notna(control_last) else float("nan")
@@ -242,7 +242,7 @@ def plot_delta(*, results_dir: Path, output_svg: Path) -> None:
         )
 
     ax.set_xlabel("")
-    ax.set_ylabel("Δ HR (bpm): Last5 − First5")
+    ax.set_ylabel("Δ HR (bpm): Last5 − Pre5")
     ax.set_ylim(-y_lim, y_lim)
     ax.set_xticks(np.arange(len(categories)))
     ax.set_xticklabels(display_labels)
@@ -254,7 +254,7 @@ def plot_delta(*, results_dir: Path, output_svg: Path) -> None:
     ]
     ax.legend(handles=legend_items, frameon=False, loc="upper right")
 
-    ax.set_title("During HRFB ΔHR (Last5 − First5)")
+    ax.set_title("During HRFB ΔHR (Last5 − Pre5)")
 
     output_svg.parent.mkdir(parents=True, exist_ok=True)
     fig.tight_layout()
