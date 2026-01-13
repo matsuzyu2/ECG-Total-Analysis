@@ -332,6 +332,128 @@ def split_feedback_segments(
     return session, out_paths, missing_keys
 
 
+def split_segment_by_start_and_duration(
+    *,
+    session_id: str,
+    extracted_csv_path: Path,
+    segment_key: str,
+    start_hhmm: object,
+    duration_sec: float,
+    start_offset_sec: float = 0.0,
+    buffer_sec: float = 15.0,
+    chunksize: int = 400_000,
+    allow_missing: bool = False,
+) -> Optional[Path]:
+    """Split one padded segment from an extracted ECG CSV.
+
+    This is a generic utility intended for downstream scripts that need custom
+    windows (e.g., during-HRFB First5/Last5). It does NOT auto-discover any
+    timestamp columns; callers provide the start time explicitly.
+
+    Parameters
+    ----------
+    session_id:
+        Session ID like "251216_TK".
+    extracted_csv_path:
+        Path to extracted CSV with a "Timestamp" column.
+    segment_key:
+        Output segment identifier (used in the output filename and report names).
+    start_hhmm:
+        HHMM start time value (e.g., 1436). Quoted strings like 1436 are
+        accepted (quotes are stripped).
+    duration_sec:
+        Measurement duration in seconds.
+    start_offset_sec:
+        Extra offset added to the start time (seconds). Useful for defining
+        sub-windows relative to the same HHMM anchor.
+    buffer_sec:
+        Padding duration in seconds added to both sides for filter edge artifacts.
+    chunksize:
+        Chunk size for pandas CSV streaming.
+    allow_missing:
+        If True, returns None when no rows match the window. If False, raises.
+
+    Returns
+    -------
+    Path | None
+        The written segment CSV path, or None when allow_missing=True and the
+        segment could not be extracted.
+    """
+    data_dir = PROJECT_ROOT / "Data"
+    session = resolve_session_identity(session_id=session_id, data_dir=data_dir)
+
+    if not extracted_csv_path.exists():
+        raise FileNotFoundError(f"Extracted CSV not found: {extracted_csv_path}")
+
+    hhmm = _clean_hhmm_cell(start_hhmm)
+    if hhmm is None:
+        if allow_missing:
+            return None
+        raise ValueError(f"Start HHMM is missing or unparseable for segment={segment_key}: {start_hhmm!r}")
+
+    # Estimate constant clock offset if the device timestamp clock is shifted.
+    hhmm_candidates = _read_all_hhmm_candidates(session=session, data_dir=data_dir)
+    clock_offset = timedelta(0)
+    if hhmm_candidates:
+        earliest_hhmm = min(hhmm_candidates.values())
+        clock_offset = _estimate_clock_offset(
+            extracted_csv_path=extracted_csv_path,
+            date_str=session.date_str,
+            earliest_hhmm=earliest_hhmm,
+        )
+
+    # Prepare time window
+    start_dt = _hhmm_to_datetime(session.date_str, hhmm) + timedelta(seconds=float(start_offset_sec)) + clock_offset
+    original_start = start_dt
+    original_end = start_dt + timedelta(seconds=float(duration_sec))
+    padded_start = start_dt - timedelta(seconds=float(buffer_sec))
+    padded_end = start_dt + timedelta(seconds=float(duration_sec) + float(buffer_sec))
+
+    segments_dir = data_dir / "Processed" / session_id / "split_segments"
+    segments_dir.mkdir(parents=True, exist_ok=True)
+    out_path = segments_dir / f"{segment_key}.csv"
+    if out_path.exists():
+        out_path.unlink()
+
+    wrote_header = False
+    total_rows = 0
+    skiprows = _detect_csv_header_skiprows(extracted_csv_path)
+    for chunk in pd.read_csv(extracted_csv_path, chunksize=chunksize, skiprows=skiprows):
+        if "Timestamp" not in chunk.columns:
+            raise ValueError(
+                f"Extracted CSV has no 'Timestamp' column: {extracted_csv_path}. "
+                "Cannot align with HHMM timestamps."
+            )
+
+        ts = pd.to_datetime(chunk["Timestamp"], errors="coerce")
+        mask = (ts >= padded_start) & (ts <= padded_end)
+        if not mask.any():
+            continue
+
+        seg = chunk.loc[mask].copy()
+        seg["_original_start_ts"] = original_start.isoformat(sep=" ")
+        seg["_original_end_ts"] = original_end.isoformat(sep=" ")
+
+        seg.to_csv(out_path, mode="a", header=not wrote_header, index=False)
+        wrote_header = True
+        total_rows += len(seg)
+
+    if total_rows == 0:
+        if allow_missing:
+            if out_path.exists():
+                try:
+                    out_path.unlink()
+                except Exception:
+                    pass
+            return None
+        raise ValueError(
+            f"No rows extracted for segment {segment_key} ({padded_start}..{padded_end}). "
+            "Check Recording Time Stamp metadata and Timestamp alignment."
+        )
+
+    return out_path
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Split extracted ECG into 4 Feedback resting-HR segments.")
     parser.add_argument("--session", required=True, help="Session ID like 251216_TK")
@@ -340,7 +462,7 @@ def main() -> None:
     parser.add_argument("--measure-sec", type=float, default=60.0)
     args = parser.parse_args()
 
-    session, out_paths = split_feedback_segments(
+    session, out_paths, _missing = split_feedback_segments(
         session_id=args.session,
         extracted_csv_path=args.extracted,
         buffer_sec=args.buffer_sec,
