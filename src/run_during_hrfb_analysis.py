@@ -4,15 +4,14 @@
 This script mirrors the structure of `run_resting_hr_feedback_analysis.py`, but
 uses Timestamp_2.csv columns HRFB_1 / HRFB_2 to extract during-feedback windows.
 
-For each HRFB start time (HRFB_1 and HRFB_2), we compute two 5-min windows
-relative to the feedback start time:
-- Pre5:    start - 5 min  to start
-- Last5:   start + 10 min to + 15 min
+For each HRFB start time (HRFB_1 and HRFB_2), we compute:
+- Pre5 (baseline): start - 5 min  to + 0 min
+- Last5:            start + 10 min to + 15 min
 
 Each window is extracted with ±padding for filter edge artifacts, then processed
 via:
 - `run_signal_diagnosis.process_segment` (bandpass + trimming + R-peak detection)
-- `run_hrv_metrics.process_peaks_file` (HRV + mean HR)
+- `run_hrv_metrics.process_peaks_file` (HRV + median HR)
 
 Outputs per session:
 - Results/<session_id>/during_hrfb_metrics.csv
@@ -21,7 +20,7 @@ Notes
 -----
 - Missing/failed segments are kept as rows with NaN metrics and status/error_msg
   so downstream analysis can distinguish missingness vs failures.
-- Segment file names use a physical identifier (e.g., during_HRFB1_First5) and
+- Segment file names use a physical identifier (e.g., during_HRFB1_Pre5) and
   do not encode Target/Control. Semantic condition labels are stored in CSV.
 """
 
@@ -149,13 +148,18 @@ def _hrfb_index_to_condition(*, order: Optional[int], hrfb_index: int) -> str:
 
 
 def _metrics_to_time_mean_hr(metrics_dict: dict) -> float:
-    # Preferred key
-    for key in [
-        "time_mean_hr",
-        "mean_hr",
-        "meanHR",
-        "hr_mean",
-    ]:
+    # Kept for compatibility/debugging; the primary downstream metric is median HR.
+    for key in ["time_mean_hr", "mean_hr", "meanHR", "hr_mean"]:
+        if key in metrics_dict:
+            try:
+                return float(metrics_dict[key])
+            except Exception:
+                pass
+    return float("nan")
+
+
+def _metrics_to_time_median_hr(metrics_dict: dict) -> float:
+    for key in ["time_median_hr", "median_hr", "medianHR", "hr_median"]:
         if key in metrics_dict:
             try:
                 return float(metrics_dict[key])
@@ -182,21 +186,32 @@ def run_session(*, session_id: str, rebuild_extracted: bool, quiet: bool) -> Pat
     hrfb = _read_hrfb_hhmm(date_str=session.date_str, subject_id=session.subject_id, data_dir=data_dir)
 
     # Segment definitions
+    # - Pre5:  baseline window (start - 5 min to start)
+    # - Last5: end window (start + 10 min to + 15 min)
     segment_specs: List[dict] = []
     for hrfb_index in [1, 2]:
         col = f"HRFB_{hrfb_index}"
         hhmm = hrfb.get(col)
-        for phase, start_offset_sec in [("Pre5", -5.0 * 60.0), ("Last5", 10.0 * 60.0)]:
-            segment_specs.append(
+        segment_specs.extend(
+            [
                 {
                     "hrfb_index": hrfb_index,
                     "timestamp_col": col,
                     "start_hhmm": hhmm,
-                    "phase": phase,
-                    "start_offset_sec": start_offset_sec,
-                    "duration_sec": 5.0 * 60.0,
-                }
-            )
+                    "phase": "Pre5",
+                    "start_offset_sec": -300.0,
+                    "duration_sec": 300.0,
+                },
+                {
+                    "hrfb_index": hrfb_index,
+                    "timestamp_col": col,
+                    "start_hhmm": hhmm,
+                    "phase": "Last5",
+                    "start_offset_sec": 600.0,
+                    "duration_sec": 300.0,
+                },
+            ]
+        )
 
     rows: List[dict] = []
 
@@ -221,6 +236,7 @@ def run_session(*, session_id: str, rebuild_extracted: bool, quiet: bool) -> Pat
             "phase": phase,
             "condition": condition,
             "segment_key": segment_name,
+            "time_median_hr": np.nan,
             "time_mean_hr": np.nan,
             "status": "pending",
             "error_msg": "",
@@ -288,6 +304,7 @@ def run_session(*, session_id: str, rebuild_extracted: bool, quiet: bool) -> Pat
 
             row = base_row.copy()
             row.update(flat)
+            row["time_median_hr"] = _metrics_to_time_median_hr(flat)
             row["time_mean_hr"] = _metrics_to_time_mean_hr(flat)
             row["quality_notes"] = str(flat.get("quality_notes", ""))
             row["status"] = "ok"
@@ -313,6 +330,7 @@ def run_session(*, session_id: str, rebuild_extracted: bool, quiet: bool) -> Pat
         "hrfb_index",
         "condition",
         "phase",
+        "time_median_hr",
         "time_mean_hr",
         "status",
         "error_msg",
@@ -342,7 +360,7 @@ def _iter_sessions_from_raw(data_dir: Path) -> List[str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="During HRFB analysis (First5 vs Last5).")
+    parser = argparse.ArgumentParser(description="During HRFB analysis (Pre5 vs Last5; median HR).")
     parser.add_argument("--session", type=str, default=None, help="Session ID like 251216_TK (default: all sessions)")
     parser.add_argument("--rebuild-extracted", action="store_true", help="Rebuild extracted *_ext.csv")
     parser.add_argument("--quiet", action="store_true", help="Suppress progress messages")
