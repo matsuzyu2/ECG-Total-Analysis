@@ -5,7 +5,7 @@ This script DOES NOT rerun the ECG pipeline.
 It reads per-session outputs created by `run_resting_hr_feedback_analysis.py`:
 - Results/<session_id>/resting_hr_feedback_metrics.csv
 
-It then computes the change amount (pre - post) for mean HR (bpm) for both
+It then computes the change amount (post - pre) for median HR (bpm) for both
 Control and Target, grouped by BF_Type:
 - Dec (Decrease condition)
 - Inc (Increase condition)
@@ -58,29 +58,38 @@ def _safe_float(x: object) -> float:
         return float("nan")
 
 
-def _get_mean_hr(metrics_df: pd.DataFrame, *, condition: str, phase: str) -> float:
+def _get_primary_hr(metrics_df: pd.DataFrame, *, condition: str, phase: str) -> float:
     row = metrics_df[(metrics_df["condition"] == condition) & (metrics_df["phase"] == phase)]
     if row.empty:
         return float("nan")
+    # Prefer robust median HR; fall back to mean HR.
+    v = row.iloc[0].get("time_median_hr")
+    if pd.notna(v):
+        return _safe_float(v)
     return _safe_float(row.iloc[0].get("time_mean_hr"))
 
 
 def _read_subject_deltas(metrics_csv: Path) -> Optional[SubjectDeltas]:
     df = pd.read_csv(metrics_csv)
-    required = {"condition", "phase", "time_mean_hr", "BF_Type", "Subject"}
+    required = {"condition", "phase", "BF_Type", "Subject"}
     missing = required - set(df.columns)
     if missing:
         raise ValueError(f"Missing columns in {metrics_csv}: {sorted(missing)}")
+
+    if "time_median_hr" not in df.columns and "time_mean_hr" not in df.columns:
+        raise ValueError(
+            f"Missing HR column(s) in {metrics_csv}: needs time_median_hr or time_mean_hr"
+        )
 
     # BF_Type / Subject are duplicated per segment; take the first non-null.
     bf_type = str(df["BF_Type"].dropna().iloc[0]) if df["BF_Type"].notna().any() else ""
     subject_id = str(df["Subject"].dropna().iloc[0]) if df["Subject"].notna().any() else ""
     session_id = metrics_csv.parent.name
 
-    control_pre = _get_mean_hr(df, condition="control", phase="pre")
-    control_post = _get_mean_hr(df, condition="control", phase="post")
-    target_pre = _get_mean_hr(df, condition="target", phase="pre")
-    target_post = _get_mean_hr(df, condition="target", phase="post")
+    control_pre = _get_primary_hr(df, condition="control", phase="pre")
+    control_post = _get_primary_hr(df, condition="control", phase="post")
+    target_pre = _get_primary_hr(df, condition="target", phase="pre")
+    target_post = _get_primary_hr(df, condition="target", phase="post")
 
     # Change amount is defined as post - pre.
     control_delta = control_post - control_pre if pd.notna(control_pre) and pd.notna(control_post) else float("nan")
@@ -332,7 +341,7 @@ def plot_pre_minus_post(*, results_dir: Path, output_html: Path) -> None:
     ax.axhline(0.0, color="#666666", linestyle="--", linewidth=1.0, zorder=0)
     ax.set_ylim(-y_lim, y_lim)
     ax.set_xlabel("Condition")
-    ax.set_ylabel("Δ Mean HR [bpm]")
+    ax.set_ylabel("Δ Median HR [bpm]")
     ax.set_title("Resting HR Change by Feedback Condition", fontsize=11)
 
     # Override x tick labels to match the requested display.

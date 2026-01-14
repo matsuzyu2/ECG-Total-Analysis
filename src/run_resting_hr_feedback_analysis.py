@@ -165,12 +165,17 @@ def _write_condition_summary_html(
 
 
 def _plot_pre_post(metrics_df: pd.DataFrame, *, session_id: str, bf_type: str, output_html: Path) -> None:
-    # Expect metrics_df contains rows for 4 segments with time_mean_hr.
+    # Expect metrics_df contains rows for 4 segments.
+    # Primary: time_median_hr (robust). Fallback: time_mean_hr (backward compatible).
     def get_value(condition: str, phase: str) -> float:
         row = metrics_df[(metrics_df["condition"] == condition) & (metrics_df["phase"] == phase)]
         if row.empty:
             return float("nan")
-        return float(row.iloc[0]["time_mean_hr"])
+        if "time_median_hr" in row.columns:
+            v = row.iloc[0].get("time_median_hr")
+            if pd.notna(v):
+                return float(v)
+        return float(row.iloc[0].get("time_mean_hr"))
 
     control_pre = get_value("control", "pre")
     control_post = get_value("control", "post")
@@ -213,7 +218,7 @@ def _plot_pre_post(metrics_df: pd.DataFrame, *, session_id: str, bf_type: str, o
     fig.update_layout(
         title=f"Resting HR pre/post values (session={session_id}, BF_Type={bf_type})",
         xaxis_title="Phase",
-        yaxis_title="Mean HR (bpm)",
+        yaxis_title="Median HR (bpm)",
         hovermode="x unified",
     )
 
@@ -362,7 +367,7 @@ def run_session(*, session_id: str, rebuild_extracted: bool, quiet: bool, allow_
     metrics_csv = results_dir / "resting_hr_feedback_metrics.csv"
     metrics_df.to_csv(metrics_csv, index=False)
 
-    # Plot mean HR (bpm) pre/post changes
+    # Plot resting HR (Median HR as primary) pre/post changes
     plot_html = results_dir / "resting_hr_feedback_comparison.html"
     _plot_pre_post(metrics_df, session_id=session_id, bf_type=session_info.bf_type, output_html=plot_html)
 
@@ -371,7 +376,11 @@ def run_session(*, session_id: str, rebuild_extracted: bool, quiet: bool, allow_
         row = metrics_df[(metrics_df["condition"] == condition) & (metrics_df["phase"] == phase)]
         if row.empty:
             return float("nan")
-        return float(row.iloc[0]["time_mean_hr"])
+        if "time_median_hr" in row.columns:
+            v = row.iloc[0].get("time_median_hr")
+            if pd.notna(v):
+                return float(v)
+        return float(row.iloc[0].get("time_mean_hr"))
 
     target_pre = _get_value("target", "pre")
     target_post = _get_value("target", "post")

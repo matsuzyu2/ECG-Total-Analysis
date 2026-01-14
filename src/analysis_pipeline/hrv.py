@@ -33,10 +33,12 @@ class RRCleaningResult:
 class TimeDomainHRV:
     """Time-domain HRV metrics."""
     mean_rr: float    # Mean RR interval (ms)
+    median_rr: float  # Median RR interval (ms)
     sdnn: float       # Standard deviation of NN intervals (ms)
     rmssd: float      # Root mean square of successive differences (ms)
     pnn50: float      # Percentage of successive intervals > 50ms (%)
     mean_hr: float    # Mean heart rate (bpm)
+    median_hr: float  # Median heart rate (bpm)
     std_hr: float     # Standard deviation of heart rate (bpm)
     min_hr: float     # Minimum heart rate (bpm)
     max_hr: float     # Maximum heart rate (bpm)
@@ -176,12 +178,13 @@ def compute_time_domain(rr_intervals: np.ndarray) -> TimeDomainHRV:
     """
     if len(rr_intervals) < 2:
         return TimeDomainHRV(
-            mean_rr=np.nan, sdnn=np.nan, rmssd=np.nan, pnn50=np.nan,
-            mean_hr=np.nan, std_hr=np.nan, min_hr=np.nan, max_hr=np.nan,
+            mean_rr=np.nan, median_rr=np.nan, sdnn=np.nan, rmssd=np.nan, pnn50=np.nan,
+            mean_hr=np.nan, median_hr=np.nan, std_hr=np.nan, min_hr=np.nan, max_hr=np.nan,
         )
     
     # Basic statistics
     mean_rr = np.mean(rr_intervals)
+    median_rr = np.median(rr_intervals)
     sdnn = np.std(rr_intervals, ddof=1)  # Sample std
     
     # Successive differences
@@ -194,16 +197,19 @@ def compute_time_domain(rr_intervals: np.ndarray) -> TimeDomainHRV:
     # Heart rate metrics (bpm = 60000 / RR in ms)
     hr = 60000 / rr_intervals
     mean_hr = np.mean(hr)
+    median_hr = np.median(hr)
     std_hr = np.std(hr, ddof=1)
     min_hr = np.min(hr)
     max_hr = np.max(hr)
     
     return TimeDomainHRV(
         mean_rr=mean_rr,
+        median_rr=median_rr,
         sdnn=sdnn,
         rmssd=rmssd,
         pnn50=pnn50,
         mean_hr=mean_hr,
+        median_hr=median_hr,
         std_hr=std_hr,
         min_hr=min_hr,
         max_hr=max_hr,
@@ -362,8 +368,8 @@ def compute_hrv_metrics(
             n_valid_intervals=0,
             removal_rate=1.0,
             time_domain=TimeDomainHRV(
-                mean_rr=np.nan, sdnn=np.nan, rmssd=np.nan, pnn50=np.nan,
-                mean_hr=np.nan, std_hr=np.nan, min_hr=np.nan, max_hr=np.nan,
+                mean_rr=np.nan, median_rr=np.nan, sdnn=np.nan, rmssd=np.nan, pnn50=np.nan,
+                mean_hr=np.nan, median_hr=np.nan, std_hr=np.nan, min_hr=np.nan, max_hr=np.nan,
             ),
             frequency_domain=FrequencyDomainHRV(
                 vlf_power=np.nan, lf_power=np.nan, hf_power=np.nan,
@@ -429,13 +435,14 @@ def compute_hrv_metrics(
                 continue
         return None
 
-    def _compute_hr_stats_from_rr(rr_ms: np.ndarray) -> Tuple[float, float, float, float]:
+    def _compute_hr_stats_from_rr(rr_ms: np.ndarray) -> Tuple[float, float, float, float, float]:
         if rr_ms is None or len(rr_ms) < 2:
-            return (np.nan, np.nan, np.nan, np.nan)
+            return (np.nan, np.nan, np.nan, np.nan, np.nan)
         hr = 60000.0 / rr_ms
         mean_hr = float(np.mean(hr))
+        median_hr = float(np.median(hr))
         std_hr = float(np.std(hr, ddof=1)) if len(hr) >= 2 else np.nan
-        return (mean_hr, std_hr, float(np.min(hr)), float(np.max(hr)))
+        return (mean_hr, median_hr, std_hr, float(np.min(hr)), float(np.max(hr)))
 
     start_dt = _parse_optional_dt(segment_start_timestamp)
     end_dt = _parse_optional_dt(segment_end_timestamp)
@@ -476,13 +483,15 @@ def compute_hrv_metrics(
                 hr_window_applied = True
 
     if hr_window_applied and hr_rr_cleaned is not None:
-        mean_hr, std_hr, min_hr, max_hr = _compute_hr_stats_from_rr(hr_rr_cleaned)
+        mean_hr, median_hr, std_hr, min_hr, max_hr = _compute_hr_stats_from_rr(hr_rr_cleaned)
         time_domain = TimeDomainHRV(
             mean_rr=time_domain.mean_rr,
+            median_rr=time_domain.median_rr,
             sdnn=time_domain.sdnn,
             rmssd=time_domain.rmssd,
             pnn50=time_domain.pnn50,
             mean_hr=mean_hr,
+            median_hr=median_hr,
             std_hr=std_hr,
             min_hr=min_hr,
             max_hr=max_hr,
@@ -499,6 +508,12 @@ def compute_hrv_metrics(
         quality_notes.append(
             f"✓ Mean HR ({label}): {time_domain.mean_hr:.1f} bpm "
             f"(range: {time_domain.min_hr:.0f}-{time_domain.max_hr:.0f})"
+        )
+
+    if not np.isnan(time_domain.median_hr):
+        label = "center 30s" if hr_window_applied else "full 60s"
+        quality_notes.append(
+            f"✓ Median HR ({label}): {time_domain.median_hr:.1f} bpm"
         )
     
     return HRVMetrics(

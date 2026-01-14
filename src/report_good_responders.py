@@ -2,7 +2,10 @@
 """Report Good Responders for Biofeedback (BF) based on Difference-in-Differences.
 
 This script scans per-session metrics CSV files and identifies subjects whose
-Target condition outperformed Control, according to BF_Type:
+Target condition outperformed Control, according to BF_Type.
+
+Primary HR representative value: Median HR (time_median_hr).
+(Falls back to Mean HR (time_mean_hr) for backward compatibility.)
 
 - Control_Delta = Control_Post - Control_Pre
 - Target_Delta  = Target_Post  - Target_Pre
@@ -60,20 +63,29 @@ def _safe_float(x: object) -> float:
         return float("nan")
 
 
-def _get_mean_hr(metrics_df: pd.DataFrame, *, condition: str, phase: str) -> float:
+def _get_primary_hr(metrics_df: pd.DataFrame, *, condition: str, phase: str) -> float:
     row = metrics_df[(metrics_df["condition"] == condition) & (metrics_df["phase"] == phase)]
     if row.empty:
         return float("nan")
+    # Prefer robust median HR; fall back to mean HR.
+    v = row.iloc[0].get("time_median_hr")
+    if pd.notna(v):
+        return _safe_float(v)
     return _safe_float(row.iloc[0].get("time_mean_hr"))
 
 
 def _read_deltas_from_metrics_csv(metrics_csv: Path) -> Optional[DeltasRow]:
     df = pd.read_csv(metrics_csv)
 
-    required = {"condition", "phase", "time_mean_hr", "BF_Type", "Subject"}
+    required = {"condition", "phase", "BF_Type", "Subject"}
     missing = required - set(df.columns)
     if missing:
         raise ValueError(f"Missing columns in {metrics_csv}: {sorted(missing)}")
+
+    if "time_median_hr" not in df.columns and "time_mean_hr" not in df.columns:
+        raise ValueError(
+            f"Missing HR column(s) in {metrics_csv}: needs time_median_hr or time_mean_hr"
+        )
 
     # BF_Type / Subject are duplicated per segment; take the first non-null.
     bf_type = str(df["BF_Type"].dropna().iloc[0]) if df["BF_Type"].notna().any() else ""
@@ -83,10 +95,10 @@ def _read_deltas_from_metrics_csv(metrics_csv: Path) -> Optional[DeltasRow]:
     if not subject_id:
         return None
 
-    control_pre = _get_mean_hr(df, condition="control", phase="pre")
-    control_post = _get_mean_hr(df, condition="control", phase="post")
-    target_pre = _get_mean_hr(df, condition="target", phase="pre")
-    target_post = _get_mean_hr(df, condition="target", phase="post")
+    control_pre = _get_primary_hr(df, condition="control", phase="pre")
+    control_post = _get_primary_hr(df, condition="control", phase="post")
+    target_pre = _get_primary_hr(df, condition="target", phase="pre")
+    target_post = _get_primary_hr(df, condition="target", phase="post")
 
     control_delta = control_post - control_pre if pd.notna(control_pre) and pd.notna(control_post) else float("nan")
     target_delta = target_post - target_pre if pd.notna(target_pre) and pd.notna(target_post) else float("nan")
